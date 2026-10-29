@@ -1,0 +1,164 @@
+
+# DATHEON TASK 2
+# California House Price Prediction
+# Linear Regression vs Ridge vs Lasso
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.datasets import fetch_california_housing
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+import warnings
+warnings.filterwarnings("ignore")
+
+# 1. Load dataset
+housing = fetch_california_housing(as_frame=True)
+X = housing.data.copy()
+y = housing.target.copy() * 100000
+
+print("DATASET LOADED SUCCESSFULLY")
+print("Features:", X.shape[1])
+print("Records:", X.shape[0])
+print("\nFirst 5 rows:")
+print(X.head())
+
+# 2. Check missing values
+print("\nMissing values:")
+print(X.isnull().sum())
+
+# 3. Correlation heatmap
+plt.figure(figsize=(11, 8))
+sns.heatmap(
+    X.assign(MedianHouseValue=y).corr(),
+    annot=True, cmap="coolwarm", fmt=".2f"
+)
+plt.title("California Housing Correlation Heatmap")
+plt.tight_layout()
+plt.show()
+
+# 4. Feature engineering: interaction features
+X["RoomsPerPerson"] = X["AveRooms"] / (
+    X["AveOccup"].replace(0, np.nan)
+)
+X["BedroomsPerRoom"] = X["AveBedrms"] / (
+    X["AveRooms"].replace(0, np.nan)
+)
+X["LocationInteraction"] = (
+    X["Latitude"] * X["Longitude"]
+)
+
+# 5. Train-test split (80/20)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, random_state=42
+)
+
+# 6. Build pipelines: imputation and scaling
+def make_pipeline(model):
+    return Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+        ("model", model)
+    ])
+
+# 7. Tune Ridge and Lasso with GridSearchCV
+models = {
+    "OLS": make_pipeline(LinearRegression()),
+    "Ridge": GridSearchCV(
+        make_pipeline(Ridge()),
+        {"model__alpha": [0.01, 0.1, 1, 10, 100]},
+        cv=5, scoring="neg_root_mean_squared_error",
+        n_jobs=-1
+    ),
+    "Lasso": GridSearchCV(
+        make_pipeline(Lasso(max_iter=20000)),
+        {"model__alpha": [0.01, 0.1, 1, 10, 100]},
+        cv=5, scoring="neg_root_mean_squared_error",
+        n_jobs=-1
+    )
+}
+
+results = []
+predictions = {}
+
+# 8. Train and evaluate
+for name, model in models.items():
+    model.fit(X_train, y_train)
+
+    if isinstance(model, GridSearchCV):
+        best_model = model.best_estimator_
+        print(f"\n{name} best alpha:", model.best_params_["model__alpha"])
+    else:
+        best_model = model
+
+    pred = best_model.predict(X_test)
+    predictions[name] = pred
+
+    rmse = np.sqrt(mean_squared_error(y_test, pred))
+    mae = mean_absolute_error(y_test, pred)
+    r2 = r2_score(y_test, pred)
+
+    results.append({
+        "Model": name,
+        "RMSE": rmse,
+        "MAE": mae,
+        "R2 Score": r2
+    })
+
+# 9. Compare model performance
+results_df = pd.DataFrame(results).sort_values("RMSE")
+print("\nMODEL COMPARISON")
+print(results_df.to_string(index=False))
+
+best_name = results_df.iloc[0]["Model"]
+print("\nBEST MODEL:", best_name)
+print("Lowest RMSE among tested models.")
+
+# 10. Actual vs predicted plot for best model
+best_predictions = predictions[best_name]
+
+plt.figure(figsize=(8, 6))
+plt.scatter(y_test, best_predictions, alpha=0.35)
+limits = [
+    min(y_test.min(), best_predictions.min()),
+    max(y_test.max(), best_predictions.max())
+]
+plt.plot(limits, limits, "r--")
+plt.xlabel("Actual House Value (USD)")
+plt.ylabel("Predicted House Value (USD)")
+plt.title(f"Actual vs Predicted - {best_name}")
+plt.tight_layout()
+plt.show()
+
+# 11. Residual distribution
+residuals = y_test - best_predictions
+
+plt.figure(figsize=(8, 5))
+sns.histplot(residuals, kde=True)
+plt.axvline(0, color="red", linestyle="--")
+plt.xlabel("Residual (Actual - Predicted)")
+plt.title(f"Residual Distribution - {best_name}")
+plt.tight_layout()
+plt.show()
+
+# 12. Residuals vs predicted
+plt.figure(figsize=(8, 5))
+plt.scatter(best_predictions, residuals, alpha=0.35)
+plt.axhline(0, color="red", linestyle="--")
+plt.xlabel("Predicted House Value (USD)")
+plt.ylabel("Residual")
+plt.title(f"Residuals vs Predicted - {best_name}")
+plt.tight_layout()
+plt.show()
+
+# 13. Save results
+results_df.to_csv("model_comparison.csv", index=False)
+print("\nSaved: model_comparison.csv")
+print("TASK 2 COMPLETED SUCCESSFULLY")
