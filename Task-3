@@ -1,0 +1,283 @@
+
+# TASK 3: PREDICTIVE CUSTOMER CHURN CLASSIFIER
+# Models: Random Forest and XGBoost
+
+!pip -q install xgboost
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline as SkPipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, classification_report, confusion_matrix,
+    RocCurveDisplay
+)
+from xgboost import XGBClassifier
+
+# 1. LOAD DATASET
+url = (
+    "https://raw.githubusercontent.com/"
+    "IBM/telco-customer-churn-on-icp4d/master/"
+    "data/Telco-Customer-Churn.csv"
+)
+
+df = pd.read_csv(url)
+print("DATASET LOADED SUCCESSFULLY")
+print("Dataset shape:", df.shape)
+print(df.head())
+
+# 2. DATA CLEANING
+df = df.drop_duplicates()
+df["TotalCharges"] = pd.to_numeric(
+    df["TotalCharges"], errors="coerce"
+)
+
+# Remove customer identifier: it is not a predictive feature
+df = df.drop(columns=["customerID"], errors="ignore")
+
+# Remove rows without a target label, if any
+df = df.dropna(subset=["Churn"])
+
+# Encode target: Yes = 1, No = 0
+df["Churn"] = df["Churn"].map({"No": 0, "Yes": 1})
+df = df.dropna(subset=["Churn"])
+df["Churn"] = df["Churn"].astype(int)
+
+X = df.drop(columns=["Churn"])
+y = df["Churn"]
+
+print("\nCLASS DISTRIBUTION")
+print(y.value_counts())
+print("\nChurn percentage:", round(y.mean() * 100, 2), "%")
+
+# 3. IDENTIFY NUMERIC AND CATEGORICAL FEATURES
+numeric_features = X.select_dtypes(
+    include=["number"]
+).columns.tolist()
+
+categorical_features = X.select_dtypes(
+    include=["object", "category", "bool"]
+).columns.tolist()
+
+# 4. PREPROCESSING
+numeric_transformer = SkPipeline([
+    ("imputer", SimpleImputer(strategy="median"))
+])
+
+categorical_transformer = SkPipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
+
+preprocessor = ColumnTransformer([
+    ("num", numeric_transformer, numeric_features),
+    ("cat", categorical_transformer, categorical_features)
+])
+
+# 5. STRATIFIED 80/20 SPLIT
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.20,
+    random_state=42,
+    stratify=y
+)
+
+print("\nTraining samples:", len(X_train))
+print("Testing samples:", len(X_test))
+
+# 6. CLASS IMBALANCE HANDLING
+# Random Forest uses balanced class weights.
+# XGBoost uses a positive-class weight based on training data.
+negative_count = int((y_train == 0).sum())
+positive_count = int((y_train == 1).sum())
+positive_weight = negative_count / positive_count
+
+models = {
+    "Random Forest": RandomForestClassifier(
+        n_estimators=300,
+        class_weight="balanced",
+        random_state=42,
+        n_jobs=-1
+    ),
+    "XGBoost": XGBClassifier(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        scale_pos_weight=positive_weight,
+        eval_metric="logloss",
+        random_state=42,
+        n_jobs=-1
+    )
+}
+
+# 7. TRAIN, CROSS-VALIDATE AND EVALUATE
+results = []
+fitted_models = {}
+probabilities = {}
+predictions = {}
+
+cv = StratifiedKFold(
+    n_splits=5, shuffle=True, random_state=42
+)
+
+for name, classifier in models.items():
+    print(f"\nTraining {name}...")
+
+    model = SkPipeline([
+        ("preprocessor", preprocessor),
+        ("classifier", classifier)
+    ])
+
+    # Cross-validation on training data only
+    cv_scores = cross_val_score(
+        model, X_train, y_train,
+        cv=cv, scoring="roc_auc", n_jobs=1
+    )
+
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    fitted_models[name] = model
+    probabilities[name] = y_prob
+    predictions[name] = y_pred
+
+    metrics = {
+        "Model": name,
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Precision": precision_score(
+            y_test, y_pred, zero_division=0
+        ),
+        "Recall": recall_score(
+            y_test, y_pred, zero_division=0
+        ),
+        "F1-Score": f1_score(
+            y_test, y_pred, zero_division=0
+        ),
+        "ROC-AUC": roc_auc_score(y_test, y_prob),
+        "CV ROC-AUC Mean": cv_scores.mean(),
+        "CV ROC-AUC Std": cv_scores.std()
+    }
+
+    results.append(metrics)
+
+    print("\nClassification Report:")
+    print(classification_report(
+        y_test, y_pred,
+        target_names=["No Churn", "Churn"],
+        zero_division=0
+    ))
+
+# 8. MODEL COMPARISON
+results_df = pd.DataFrame(results).set_index("Model")
+
+print("\nMODEL COMPARISON")
+print(results_df.round(4).to_string())
+
+best_model_name = results_df["ROC-AUC"].idxmax()
+best_auc = results_df.loc[best_model_name, "ROC-AUC"]
+
+print("\nBEST MODEL:", best_model_name)
+print("Best Test ROC-AUC:", round(best_auc, 4))
+print("ROC-AUC percentage:", round(best_auc * 100, 2), "%")
+
+if best_auc >= 0.80:
+    print("Target achieved: ROC-AUC is at least 80%.")
+else:
+    print("Target not yet achieved: try further tuning.")
+
+# 9. ROC-AUC CURVE
+plt.figure(figsize=(9, 6))
+
+for name, y_prob in probabilities.items():
+    RocCurveDisplay.from_predictions(
+        y_test, y_prob, name=name, ax=plt.gca()
+    )
+
+plt.plot([0, 1], [0, 1], "k--", label="Random baseline")
+plt.title("ROC Curves - Customer Churn Prediction")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# 10. CONFUSION MATRIX HEATMAPS
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+for ax, name in zip(axes, models.keys()):
+    cm = confusion_matrix(
+        y_test, predictions[name], labels=[0, 1]
+    )
+
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues",
+        xticklabels=["No Churn", "Churn"],
+        yticklabels=["No Churn", "Churn"],
+        ax=ax
+    )
+
+    ax.set_title(f"{name} - Confusion Matrix")
+    ax.set_xlabel("Predicted Label")
+    ax.set_ylabel("Actual Label")
+
+plt.tight_layout()
+plt.show()
+
+# 11. TOP 10 FEATURE IMPORTANCES FROM THE BEST MODEL
+best_model = fitted_models[best_model_name]
+
+feature_names = (
+    best_model.named_steps["preprocessor"]
+    .get_feature_names_out()
+)
+
+importances = best_model.named_steps[
+    "classifier"
+].feature_importances_
+
+importance_df = pd.DataFrame({
+    "Feature": feature_names,
+    "Importance": importances
+}).sort_values("Importance", ascending=False)
+
+top10 = importance_df.head(10).sort_values(
+    "Importance", ascending=True
+)
+
+print("\nTOP 10 IMPORTANT FEATURES")
+print(top10.sort_values(
+    "Importance", ascending=False
+).to_string(index=False))
+
+plt.figure(figsize=(10, 6))
+plt.barh(top10["Feature"], top10["Importance"])
+plt.title(f"Top 10 Feature Importances - {best_model_name}")
+plt.xlabel("Importance")
+plt.ylabel("Feature")
+plt.tight_layout()
+plt.show()
+
+# 12. SAVE RESULTS
+results_df.to_csv("model_comparison.csv")
+importance_df.to_csv("feature_importance.csv", index=False)
+
+print("\nFILES SAVED:")
+print("1. model_comparison.csv")
+print("2. feature_importance.csv")
+print("\nPROJECT COMPLETED SUCCESSFULLY!")
