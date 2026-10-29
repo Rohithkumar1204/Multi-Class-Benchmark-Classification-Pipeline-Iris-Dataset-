@@ -1,0 +1,2 @@
+# Multi-Class-Benchmark-Classification-Pipeline-Iris-Dataset-
+A machine learning classification project using the Iris dataset to compare Logistic Regression and Decision Tree algorithms. Includes an 80/20 stratified train-test split, StandardScaler, accuracy, precision, recall, F1-score, confusion matrix heatmaps, and model performance comparison using Python, Pandas, Scikit-learn, Matplotlib, and Seaborn.
